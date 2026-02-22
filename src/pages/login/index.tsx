@@ -54,7 +54,8 @@ const Login = () => {
     localStorage.getItem("password") || "",
   )
   const [opt, setOpt] = createSignal("")
-  const [useauthn, setuseauthn] = createSignal(false)
+  const [usePasskey, setUsePasskey] = createSignal(false)
+  const [passkeyNeedsUsername, setPasskeyNeedsUsername] = createSignal(false)
   const [remember, setRemember] = createStorageSignal("remember-pwd", "false")
   const [useLdap, setUseLdap] = createSignal(false)
   const [loading, data] = useFetch(
@@ -74,7 +75,7 @@ const Login = () => {
       }
     },
   )
-  const [, postauthnlogin] = useFetch(
+  const [, postPasskeyLogin] = useFetch(
     (
       session: string,
       credentials: AuthenticationPublicKeyCredential,
@@ -82,7 +83,9 @@ const Login = () => {
       signal: AbortSignal | undefined,
     ): Promise<Resp<{ token: string }>> =>
       r.post(
-        "/authn/webauthn_finish_login?username=" + username,
+        `/authn/passkey_finish_login${
+          username ? `?username=${encodeURIComponent(username)}` : ""
+        }`,
         JSON.stringify(credentials),
         {
           headers: {
@@ -92,13 +95,33 @@ const Login = () => {
         },
       ),
   )
-  interface Webauthntemp {
+  interface PasskeyTemp {
     session: string
     options: CredentialRequestOptionsJSON
+    require_username?: boolean
   }
-  const [, getauthntemp] = useFetch(
-    (username, signal: AbortSignal | undefined): PResp<Webauthntemp> =>
-      r.get("/authn/webauthn_begin_login?username=" + username, {
+  interface LegacyAuthnStatus {
+    has_legacy: boolean
+  }
+  const [, getPasskeyTemp] = useFetch(
+    (
+      username: string,
+      allowCredentials: "yes" | "no",
+      signal: AbortSignal | undefined,
+    ): PResp<PasskeyTemp> => {
+      const params = new URLSearchParams()
+      params.set("allowCredentials", allowCredentials)
+      if (username) {
+        params.set("username", username)
+      }
+      return r.get(`/authn/passkey_begin_login?${params.toString()}`, {
+        signal,
+      })
+    },
+  )
+  const [, getLegacyAuthnStatus] = useFetch(
+    (signal: AbortSignal | undefined): PResp<LegacyAuthnStatus> =>
+      r.get("/authn/passkey_legacy_status", {
         signal,
       }),
   )
@@ -114,9 +137,34 @@ const Login = () => {
       return false
     }
   }
-  const AuthnSignEnabled = getSettingBool("webauthn_login_enabled")
+  const passkeySignEnabled = true
+  const passkeyAutoDisabled = "passkey-auto-login-disabled"
+  const legacyPasskeyHintShown = "legacy-passkey-upgrade-tip-shown"
+  const syncLegacyAuthnStatus = async (signal?: AbortSignal) => {
+    const resp = await getLegacyAuthnStatus(signal)
+    handleRespWithoutNotify(
+      resp,
+      (data) => {
+        setPasskeyNeedsUsername(Boolean(data.has_legacy))
+      },
+      undefined,
+      false,
+    )
+  }
   const AuthnSwitch = async () => {
-    setuseauthn(!useauthn())
+    if (usePasskey()) {
+      AuthnSignal?.abort()
+      sessionStorage.setItem(passkeyAutoDisabled, "true")
+      setUsePasskey(false)
+      setPasskeyNeedsUsername(false)
+      return
+    }
+    sessionStorage.removeItem(passkeyAutoDisabled)
+    await syncLegacyAuthnStatus()
+    setUsePasskey(true)
+    if (!passkeyNeedsUsername()) {
+      await AuthnLogin()
+    }
   }
   let AuthnSignal: AbortController | null = null
   const AuthnLogin = async (conditional?: boolean) => {
@@ -132,14 +180,11 @@ const Login = () => {
     AuthnSignal?.abort()
     const controller = new AbortController()
     AuthnSignal = controller
-    const username_login: string = conditional ? "" : username()
-    if (!conditional && remember() === "true") {
-      localStorage.setItem("username", username())
-    } else {
-      localStorage.removeItem("username")
-    }
-    const resp = await getauthntemp(username_login, controller.signal)
-    handleResp(resp, async (data) => {
+
+    const continuePasskeyLogin = async (
+      data: PasskeyTemp,
+      usernameLogin: string,
+    ) => {
       try {
         const options = parseRequestOptionsFromJSON(data.options)
         options.signal = controller.signal
@@ -148,14 +193,22 @@ const Login = () => {
           options.mediation = "conditional"
         }
         const credentials = await get(options)
-        const resp = await postauthnlogin(
+        const resp = await postPasskeyLogin(
           data.session,
           credentials,
-          username_login,
+          usernameLogin,
           controller.signal,
         )
         handleRespWithoutNotify(resp, (data) => {
+          if (
+            usernameLogin &&
+            !sessionStorage.getItem(legacyPasskeyHintShown)
+          ) {
+            notify.warning(t("login.passkey_legacy_upgrade_tip"))
+            sessionStorage.setItem(legacyPasskeyHintShown, "true")
+          }
           notify.success(t("login.success"))
+          setPasskeyNeedsUsername(false)
           changeToken(data.token)
           to(
             decodeURIComponent(searchParams.redirect || base_path || "/"),
@@ -166,13 +219,43 @@ const Login = () => {
         if (error instanceof Error && error.name != "AbortError")
           notify.error(error.message)
       }
+    }
+
+    const usernameLogin =
+      !conditional && passkeyNeedsUsername() ? username().trim() : ""
+    const allowCredentials: "yes" | "no" =
+      !conditional && passkeyNeedsUsername() ? "yes" : "no"
+    const resp = await getPasskeyTemp(
+      usernameLogin,
+      allowCredentials,
+      controller.signal,
+    )
+    handleResp(resp, async (data) => {
+      if (data.require_username && !usernameLogin) {
+        setPasskeyNeedsUsername(true)
+        return
+      }
+      setPasskeyNeedsUsername(Boolean(data.require_username))
+      await continuePasskeyLogin(data, usernameLogin)
     })
   }
   const AuthnCleanUpHandler = () => AuthnSignal?.abort()
   onMount(() => {
-    if (AuthnSignEnabled) {
+    if (passkeySignEnabled) {
       window.addEventListener("beforeunload", AuthnCleanUpHandler)
-      AuthnLogin(true)
+      if (sessionStorage.getItem(passkeyAutoDisabled) === "true") return
+      if (!supported()) return
+      syncLegacyAuthnStatus().then(() => {
+        if (passkeyNeedsUsername()) {
+          setUsePasskey(true)
+          return
+        }
+        isAuthnConditionalAvailable().then((available) => {
+          if (!available) return
+          setUsePasskey(true)
+          AuthnLogin(true)
+        })
+      })
     }
   })
   onCleanup(() => {
@@ -181,7 +264,7 @@ const Login = () => {
   })
 
   const Login = async () => {
-    if (!useauthn()) {
+    if (!usePasskey()) {
       if (remember() === "true") {
         localStorage.setItem("username", username())
         localStorage.setItem("password", password())
@@ -254,13 +337,19 @@ const Login = () => {
             />
           }
         >
-          <Input
-            name="username"
-            placeholder={t("login.username-tips")}
-            value={username()}
-            onInput={(e) => setUsername(e.currentTarget.value)}
-          />
-          <Show when={!useauthn()}>
+          <Show when={!usePasskey() || passkeyNeedsUsername()}>
+            <Input
+              name="username"
+              placeholder={
+                usePasskey()
+                  ? t("login.passkey_input_username")
+                  : t("login.username-tips")
+              }
+              value={username()}
+              onInput={(e) => setUsername(e.currentTarget.value)}
+            />
+          </Show>
+          <Show when={!usePasskey()}>
             <Input
               name="password"
               placeholder={t("login.password-tips")}
@@ -274,29 +363,31 @@ const Login = () => {
               }}
             />
           </Show>
-          <Flex
-            px="$1"
-            w="$full"
-            fontSize="$sm"
-            color="$neutral10"
-            justifyContent="space-between"
-            alignItems="center"
-          >
-            <Checkbox
-              checked={remember() === "true"}
-              onChange={() =>
-                setRemember(remember() === "true" ? "false" : "true")
-              }
+          <Show when={!usePasskey()}>
+            <Flex
+              px="$1"
+              w="$full"
+              fontSize="$sm"
+              color="$neutral10"
+              justifyContent="space-between"
+              alignItems="center"
             >
-              {t("login.remember")}
-            </Checkbox>
-            <Text as="a" target="_blank" href={t("login.forget_url")}>
-              {t("login.forget")}
-            </Text>
-          </Flex>
+              <Checkbox
+                checked={remember() === "true"}
+                onChange={() =>
+                  setRemember(remember() === "true" ? "false" : "true")
+                }
+              >
+                {t("login.remember")}
+              </Checkbox>
+              <Text as="a" target="_blank" href={t("login.forget_url")}>
+                {t("login.forget")}
+              </Text>
+            </Flex>
+          </Show>
         </Show>
         <HStack w="$full" spacing="$2">
-          <Show when={!useauthn()}>
+          <Show when={!usePasskey()}>
             <Button
               colorScheme="primary"
               w="$full"
@@ -313,7 +404,7 @@ const Login = () => {
             </Button>
           </Show>
           <Button w="$full" loading={loading()} onClick={Login}>
-            {t("login.login")}
+            {usePasskey() ? t("login.continue_with_passkey") : t("login.login")}
           </Button>
         </HStack>
         <Show when={ldapLoginEnabled}>
@@ -348,7 +439,7 @@ const Login = () => {
           <SwitchLanguageWhite />
           <SwitchColorMode />
           <SSOLogin />
-          <Show when={AuthnSignEnabled}>
+          <Show when={passkeySignEnabled}>
             <Icon
               cursor="pointer"
               boxSize="$8"

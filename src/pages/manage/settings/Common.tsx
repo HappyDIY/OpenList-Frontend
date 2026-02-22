@@ -28,7 +28,9 @@ const CommonSettings = (props: CommonSettingsProps) => {
   const [settings, setSettings] = createStore<SettingItem[]>([])
   const refresh = async () => {
     const resp = await getSettings()
-    handleResp<SettingItem[]>(resp, setSettings)
+    handleResp<SettingItem[]>(resp, (items) => {
+      setSettings(items.filter((item) => item.key !== "webauthn_login_enabled"))
+    })
   }
   refresh()
   const [saveLoading, saveSettings] = useFetch(

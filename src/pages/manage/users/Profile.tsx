@@ -15,13 +15,20 @@ import {
   VStack,
   Text,
 } from "@hope-ui/solid"
-import { createSignal, For, JSXElement, onCleanup, Show } from "solid-js"
+import {
+  createMemo,
+  createSignal,
+  For,
+  JSXElement,
+  onCleanup,
+  Show,
+} from "solid-js"
 import { LinkWithBase, MaybeLoading } from "~/components"
 import { useFetch, useManageTitle, useRouter, useT } from "~/hooks"
 import { setMe, me, getSettingBool } from "~/store"
 import { PEmptyResp, UserMethods, UserPermissions, PResp } from "~/types"
 import { handleResp, handleRespWithoutNotify, notify, r } from "~/utils"
-import { WebauthnItem } from "./Webauthnitems"
+import { PasskeyItem } from "./PasskeyItems"
 import {
   RegistrationPublicKeyCredential,
   create,
@@ -56,21 +63,24 @@ const Profile = () => {
       }),
   )
 
-  interface WebauthnItem {
+  interface PasskeyItemModel {
     fingerprint: string
     id: string
+    creator_ip?: string
+    creator_ua?: string
+    is_legacy?: boolean
   }
 
-  interface Webauthntemp {
+  interface PasskeyTemp {
     session: string
     options: CredentialCreationOptionsJSON
   }
 
   const [getauthncredentialsloading, getauthncredentials] = useFetch(
-    (): PResp<WebauthnItem[]> => r.get("/authn/getcredentials"),
+    (): PResp<PasskeyItemModel[]> => r.get("/authn/getcredentials"),
   )
   const [, getauthntemp] = useFetch(
-    (): PResp<Webauthntemp> => r.get("/authn/webauthn_begin_registration"),
+    (): PResp<PasskeyTemp> => r.get("/authn/passkey_begin_registration"),
   )
   const [postregistrationloading, postregistration] = useFetch(
     (
@@ -78,7 +88,7 @@ const Profile = () => {
       credentials: RegistrationPublicKeyCredential,
     ): PEmptyResp =>
       r.post(
-        "/authn/webauthn_finish_registration",
+        "/authn/passkey_finish_registration",
         JSON.stringify(credentials),
         {
           headers: {
@@ -119,16 +129,15 @@ const Profile = () => {
   onCleanup(() => {
     window.removeEventListener("message", messageEvent)
   })
-  const [credentials, setcredentials] = createSignal<WebauthnItem[]>([])
+  const [credentials, setcredentials] = createSignal<PasskeyItemModel[]>([])
+  const hasLegacyCredential = createMemo(() =>
+    credentials().some((item) => item.is_legacy),
+  )
   const initauthnEdit = async () => {
     const resp = await getauthncredentials()
     handleRespWithoutNotify(resp, setcredentials)
   }
-  if (
-    supported() &&
-    !UserMethods.is_guest(me()) &&
-    getSettingBool("webauthn_login_enabled")
-  ) {
+  if (supported() && !UserMethods.is_guest(me())) {
     initauthnEdit()
   }
   return (
@@ -259,18 +268,20 @@ const Profile = () => {
           </Show>
         </HStack>
       </Show>
-      <Show
-        when={
-          !UserMethods.is_guest(me()) &&
-          getSettingBool("webauthn_login_enabled")
-        }
-      >
+      <Show when={!UserMethods.is_guest(me())}>
         <Heading>{t("users.webauthn")}</Heading>
         <HStack wrap="wrap" gap="$2" mt="$2">
           <MaybeLoading loading={getauthncredentialsloading()}>
             <For each={credentials()}>
               {(item) => (
-                <WebauthnItem id={item.id} fingerprint={item.fingerprint} />
+                <PasskeyItem
+                  id={item.id}
+                  fingerprint={item.fingerprint}
+                  creator_ip={item.creator_ip}
+                  creator_ua={item.creator_ua}
+                  is_legacy={item.is_legacy}
+                  onDeleted={initauthnEdit}
+                />
               )}
             </For>
           </MaybeLoading>
@@ -278,6 +289,10 @@ const Profile = () => {
         <Button
           loading={postregistrationloading()}
           onClick={async () => {
+            if (hasLegacyCredential()) {
+              notify.warning(t("users.passkey_add_blocked_by_legacy"))
+              return
+            }
             if (!supported()) {
               notify.error(t("users.webauthn_not_supported"))
               return
@@ -292,6 +307,7 @@ const Profile = () => {
                   await postregistration(session, browserresponse),
                   () => {
                     notify.success(t("users.add_webauthn_success"))
+                    initauthnEdit()
                   },
                 )
               } catch (error: unknown) {

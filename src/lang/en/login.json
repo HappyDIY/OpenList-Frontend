@@ -8,6 +8,9 @@
   "forget_url": "https://doc.oplist.org/faq/howto#how-to-get-password-if-i-forget-it",
   "clear": "Clear",
   "login": "Login",
+  "continue_with_passkey": "Continue with passkey",
+  "passkey_input_username": "Enter username for legacy security key",
   "use_guest": "Browse as a guest",
-  "success": "Login successfully"
+  "success": "Login successfully",
+  "passkey_legacy_upgrade_tip": "You are using a legacy security key. After login, please add a new passkey in Profile for passwordless sign-in."
 }

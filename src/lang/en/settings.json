@@ -141,6 +141,5 @@
   "upload_task_threads_num": "Upload task threads num",
   "version": "Version",
   "video_autoplay": "Video autoplay",
-  "video_types": "Video types",
-  "webauthn_login_enabled": "Webauthn login enabled"
+  "video_types": "Video types"
 }
