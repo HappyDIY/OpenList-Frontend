@@ -21,7 +21,7 @@ import { useFetch, useManageTitle, useRouter, useT } from "~/hooks"
 import { setMe, me, getSettingBool } from "~/store"
 import { PEmptyResp, UserMethods, UserPermissions, PResp } from "~/types"
 import { handleResp, handleRespWithoutNotify, notify, r } from "~/utils"
-import { WebauthnItem } from "./Webauthnitems"
+import { PasskeyItem } from "./PasskeyItems"
 import {
   RegistrationPublicKeyCredential,
   create,
@@ -56,21 +56,21 @@ const Profile = () => {
       }),
   )
 
-  interface WebauthnItem {
+  interface PasskeyItemModel {
     fingerprint: string
     id: string
   }
 
-  interface Webauthntemp {
+  interface PasskeyTemp {
     session: string
     options: CredentialCreationOptionsJSON
   }
 
   const [getauthncredentialsloading, getauthncredentials] = useFetch(
-    (): PResp<WebauthnItem[]> => r.get("/authn/getcredentials"),
+    (): PResp<PasskeyItemModel[]> => r.get("/authn/getcredentials"),
   )
   const [, getauthntemp] = useFetch(
-    (): PResp<Webauthntemp> => r.get("/authn/webauthn_begin_registration"),
+    (): PResp<PasskeyTemp> => r.get("/authn/passkey_begin_registration"),
   )
   const [postregistrationloading, postregistration] = useFetch(
     (
@@ -78,7 +78,7 @@ const Profile = () => {
       credentials: RegistrationPublicKeyCredential,
     ): PEmptyResp =>
       r.post(
-        "/authn/webauthn_finish_registration",
+        "/authn/passkey_finish_registration",
         JSON.stringify(credentials),
         {
           headers: {
@@ -119,7 +119,7 @@ const Profile = () => {
   onCleanup(() => {
     window.removeEventListener("message", messageEvent)
   })
-  const [credentials, setcredentials] = createSignal<WebauthnItem[]>([])
+  const [credentials, setcredentials] = createSignal<PasskeyItemModel[]>([])
   const initauthnEdit = async () => {
     const resp = await getauthncredentials()
     handleRespWithoutNotify(resp, setcredentials)
@@ -270,7 +270,7 @@ const Profile = () => {
           <MaybeLoading loading={getauthncredentialsloading()}>
             <For each={credentials()}>
               {(item) => (
-                <WebauthnItem id={item.id} fingerprint={item.fingerprint} />
+                <PasskeyItem id={item.id} fingerprint={item.fingerprint} />
               )}
             </For>
           </MaybeLoading>
